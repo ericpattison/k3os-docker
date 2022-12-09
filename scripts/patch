@@ -1,0 +1,10 @@
+#!/bin/bash
+PATCHES_DIR=/var/patches
+pushd build/kernel
+
+for p in $(find ${PATCHES_DIR} -name "*.patch"); do
+    echo "Applying patch $p"
+    patch -p1 -i $p
+done
+
+popd

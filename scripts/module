@@ -1,0 +1,6 @@
+#!/bin/bash
+for abi in $(find . -mindepth 1 -maxdepth 2 -type d -name abi); do
+    for ver in $abi/5.*; do
+        echo bpfilter > $ver/modules.ignore
+    done
+done
