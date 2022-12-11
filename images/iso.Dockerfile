@@ -25,4 +25,4 @@ RUN mkdir -p /output && \
     grub-mkrescue -o /output/k3os.iso /usr/src/iso/. -- -volid K3OS -joliet on && \
     [ -e /output/k3os.iso ]
 
-#CMD ["run-kvm.sh"]
+CMD ["run-kvm.sh"]
