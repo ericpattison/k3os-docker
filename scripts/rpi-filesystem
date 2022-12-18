@@ -1,0 +1,173 @@
+#!/bin/bash
+
+# Constants
+BOOT_CAPACITY=60
+ROOT_CAPACITY=1000
+IMAGE_SIZE=$(($BOOT_CAPACITY + $ROOT_CAPACITY))
+
+# utility functions
+unpack_deb() {
+    ar x $1
+    tar -xf data.tar.[gx]z -C $2
+    rm -f data.tar.gz data.tar.xz control.tar.gz control.tar.xz debian-binary 
+}
+
+# Create and size the temp file, with partitions
+IMAGE=$(mktemp k3os-pi.iso.XXXXXX)
+truncate -s ${IMAGE_SIZE}M $IMAGE
+parted -s $IMAGE mklabel msdos
+parted -s $IMAGE unit MB mkpart primary fat32 1 $BOOT_CAPACITY
+parted -s $IMAGE unit MB mkpart primary $(($BOOT_CAPACITY+1)) $IMAGE_SIZE
+parted -s $IMAGE set 1 boot on
+
+# Create the loop devices to interact with the image
+LODEV=`losetup --show -fP $IMAGE`
+partprobe -s $LPDEV
+
+LODEV_BOOT=${LODEV}p1
+LODEV_ROOT=${LODEV}p2
+
+mkfs.fat $LODEV_BOOT
+mkfs.ext4 $LODEV_ROOT
+tune2fs -i 1m $LODEV_ROOT
+e2label $LODEV_ROOT "root"
+
+# ROOT Drive
+echo "== Initializing root =="
+mkdir /mnt/root
+mount $LODEV_ROOT /mnt/root
+mkdir /mnt/root/bin /mnt/root/boot /mnt/root/dev /mnt/root/etc /mnt/root/home /mnt/root/lib /mnt/root/media
+mkdir /mnt/root/mnt /mnt/root/opt /mnt/root/proc /mnt/root/root /mnt/root/sbin /mnt/root/sys
+mkdir /mnt/root/tmp /mnt/root/usr /mnt/root/var
+chmod 0755 /mnt/root/*
+chmod 0700 /mnt/root/root
+chmod 1777 /mnt/root/tmp
+ln -s /proc/mounts /mnt/root/etc/mtab
+mknod -m 0666 /mnt/root/dev/null c 1 3
+
+# BOOT Drive
+echo "== Initializing boot =="
+PITEMP="$(mktemp -d)"
+tar -xf raspberrypi-firmware.tar.gz  --strip 1 -C $PITEMP
+
+mkdir /mnt/boot
+mount $LODEV_BOOT /mnt/boot
+cp -R $PITEMP/boot/* /mnt/boot
+cp -R $PITEMP/modules /mnt/root/lib
+cat <<EOF | tee /mnt/boot/config.txt >/dev/null
+dtoverlay=vc4-fkms-v3d
+gpu_mem=128
+arm_64bit=1
+
+[pi3]
+audio_pwm_mode=2
+[pi4]
+max_framebuffers=2
+kernel=kernel8.img
+[all]
+EOF
+
+PARTUUID=$(blkid -o export $LODEV_ROOT | grep PARTUUID)
+QUIRKS=$( [ -f quairks.txt ] && cat quirks.txt || true)
+echo "dwc_otg.lpm_enable=0 root=$PARTUUID rootfstype=ext4 cgroup_memory=1 cgroup_enable=memory rootwait init=/sbin/init.resizefs ro $QUIRKS" | tee /mnt/boot/cmdline.txt >/dev/null
+rm -rf $PITEMP
+
+echo "== Installing =="
+cp -R /usr/src/package/* /mnt/root
+cp -R /usr/src/config /mnt/root/k3os/system
+
+find "/usr/src/config/" -maxdepth 1 -type f -name '*.yaml' -print0 | while IFS= read -r -d $'\0' file; do
+	envsubst < "$file" | tee "/mnt/root/k3os/system/config/$(basename "$file")" > /dev/null
+done
+
+for filename in /mnt/root/k3os/system/config/*.*; do [ "$filename" != "${filename,,}" ] && mv "$filename" "${filename,,}" ; done 
+K3OS_VERSION=$(ls --indicator-style=none /mnt/root/k3os/system/k3os | grep -v current | head -n1)
+echo "K3OS Version => $K3OS_VERSION"
+
+# BROADCOM firmware
+BRCMTMP=$(mktemp -d)
+7z e -y rpi-firmware-nonfree-buster.zip -o"$BRCMTMP" "firmware-nonfree-buster/brcm/*" > /dev/null
+mkdir -p /mnt/root/lib/firmware/brcm
+cp "$BRCMTMP"/brcmfmac43455* /mnt/root/lib/firmware/brcm/
+cp "$BRCMTMP"/brcmfmac43430* /mnt/root/lib/firmware/brcm/
+rm -rf "$BRCMTMP"
+
+# BUSYBOX
+unpack_deb "libc6-arm64.deb" "/mnt/root"
+unpack_deb "busybox-arm64.deb" "/mnt/root"
+
+for i in \
+	ar \
+	awk \
+	basename \
+	cat \
+	chmod \
+	dirname \
+	dmesg \
+	echo \
+	fdisk \
+	find \
+	grep \
+	ln \
+	ls \
+	lsmod \
+	mkdir \
+	mknod \
+	modprobe \
+	mount \
+	mv \
+	poweroff \
+	readlink \
+	reboot \
+	rm \
+	rmdir \
+	sed \
+	sh \
+	sleep \
+	sync \
+	tail \
+	tar \
+	touch \
+	umount \
+	uname \
+	wget \
+; do
+	ln -s busybox /mnt/root/bin/$i
+done
+
+#Resize/fsck utility
+unpack_deb "libcom-err2-arm64.deb" "/mnt/root"
+unpack_deb "libblkid1-arm64.deb" "/mnt/root"
+unpack_deb "libuuid1-arm64.deb" "/mnt/root"
+unpack_deb "libext2fs2-arm64.deb" "/mnt/root"
+unpack_deb "e2fsprogs-arm64.deb" "/mnt/root"
+unpack_deb "util-linux-arm64.deb" "/mnt/root"
+
+mkdir root-resize
+unpack_deb "parted-arm64.deb" "root-resize"
+unpack_deb "libparted2-arm64.deb" "root-resize"
+unpack_deb "libreadline7-arm64.deb" "root-resize"
+unpack_deb "libtinfo5-arm64.deb" "root-resize"
+unpack_deb "libdevmapper1-arm64.deb" "root-resize"
+unpack_deb "libselinux1-arm64.deb" "root-resize"
+unpack_deb "libudev1-arm64.deb" "root-resize"
+unpack_deb "libpcre3-arm64.deb" "root-resize"
+unpack_deb "libmount1-arm64.deb" "root-resize"
+unpack_deb "libsmartcols1-arm64.deb" "root-resize"
+
+tar -cJf /mnt/root/root-resize.tar.xz "root-resize"
+rm -rf root-resize
+
+install -m 0755 -o root -g root /usr/src/init.preinit /usr/src/init.resizefs /mnt/root/sbin
+
+echo "== Cleanup =="
+sync
+umount /mnt/boot
+rmdir /mnt/boot
+
+umount /mnt/root
+rmdir /mnt/root
+sync
+
+sudo losetup -d $LODEV
+mv $IMAGE /output/rpi-k3os-${K3OS_VERSION}.img

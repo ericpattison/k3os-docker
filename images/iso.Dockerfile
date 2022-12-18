@@ -7,6 +7,7 @@ ARG TAG
 FROM ${REPO}/base:${TAG} as base
 
 ARG ARCH
+ARG VERSION
 RUN apk add xorriso grub grub-efi mtools libvirt qemu-img qemu-modules
 RUN if [ "${ARCH}" == "amd64" ]; then \
         apk add qemu-system-x86_64 grub-bios ovmf \
@@ -24,5 +25,6 @@ COPY config.yaml /usr/src/iso/k3os/system
 RUN mkdir -p /output && \
     grub-mkrescue -o /output/k3os.iso /usr/src/iso/. -- -volid K3OS -joliet on && \
     [ -e /output/k3os.iso ]
-
+RUN mkdir -p /dist && 
+    cp /output/k3os.iso /dist/k3os-{VERSION}.iso
 CMD ["run-kvm.sh"]
